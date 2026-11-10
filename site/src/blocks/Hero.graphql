@@ -1,0 +1,8 @@
+fragment Hero on HeroBlock {
+  heading
+  lede
+  actions {
+    label
+    href
+  }
+}
