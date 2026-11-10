@@ -1,0 +1,22 @@
+# Local development database for the CMS. Port 5442 keeps it clear of other Postgres instances.
+name: streamarr-io
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: streamarr_io
+      POSTGRES_PASSWORD: streamarr_io
+      POSTGRES_DB: streamarr_io
+    ports:
+      - '127.0.0.1:5442:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U streamarr_io -d streamarr_io']
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+volumes:
+  pgdata:

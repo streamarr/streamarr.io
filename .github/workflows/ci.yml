@@ -1,0 +1,127 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The CMS reads both when it loads its config. They name the throwaway Postgres service of the
+  # prerender job and a signing key that protects nothing.
+  DATABASE_URL: postgres://streamarr_io:streamarr_io@127.0.0.1:5432/streamarr_io
+  PAYLOAD_SECRET: ci-only-protects-nothing
+
+# The jobs run side by side. The last one, build, is the check that main requires.
+jobs:
+  site:
+    name: Check the site's formatting, types, unit tests and generated documents
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: site
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: ./.github/actions/install
+        with:
+          package: site
+      - run: npm run format:check
+      - run: npm run typecheck
+      - run: npm test
+      - name: Verify the typed documents match the CMS's committed schema
+        run: npm run codegen:check
+
+  cms:
+    name: Check the CMS's types and its committed GraphQL schema
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: cms
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: ./.github/actions/install
+        with:
+          package: cms
+      - run: npm run typecheck
+      - name: Verify schema.graphql matches the collections and blocks
+        run: npm run schema:check
+
+  # The one place the two packages meet: a real CMS on a real database answers the site's build.
+  prerender:
+    name: Prerender the site from a seeded CMS
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: streamarr_io
+          POSTGRES_PASSWORD: streamarr_io
+          POSTGRES_DB: streamarr_io
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U streamarr_io -d streamarr_io"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: ./.github/actions/install
+        with:
+          package: cms
+      - uses: ./.github/actions/install
+        with:
+          package: site
+      - name: Seed the placeholder pages
+        working-directory: cms
+        run: npm run seed
+      - name: Run the CMS integration test
+        working-directory: cms
+        run: npm run test:int
+      - name: Start the CMS and wait for its GraphQL endpoint
+        working-directory: cms
+        run: |
+          npm run dev > "$RUNNER_TEMP/cms.log" 2>&1 &
+          for attempt in $(seq 1 60); do
+            if curl --silent --fail --output /dev/null --request POST \
+              --header 'content-type: application/json' \
+              --data '{"query":"{ __typename }"}' \
+              http://localhost:3000/api/graphql; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo '::error::The CMS did not answer on /api/graphql within two minutes'
+          exit 1
+      - name: Prerender the site
+        working-directory: site
+        run: npm run build
+      - name: Require the seeded home page in the static output
+        working-directory: site
+        run: grep --quiet 'Your library, on your own server' dist/client/index.html
+      - name: Show the CMS log
+        if: ${{ failure() }}
+        run: cat "$RUNNER_TEMP/cms.log"
+
+  # GitHub counts a skipped required check as passing, and it skips a job whose needs did not all
+  # succeed. always() keeps this job running, so a job that failed, timed out or was cancelled fails
+  # the required check.
+  build:
+    name: build
+    needs: [site, cms, prerender]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: streamarr/streamarr-workflows/.github/actions/require-jobs@76cd4dd76bce93283d0ccb7ba08429248b6f18f1
+        with:
+          jobs: ${{ toJSON(needs) }}

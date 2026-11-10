@@ -1,0 +1,7 @@
+fragment FeatureGrid on FeatureGridBlock {
+  heading
+  features {
+    title
+    body
+  }
+}

@@ -1,0 +1,15 @@
+query PageBySlug($slug: String!) {
+  Pages(where: { slug: { equals: $slug } }, limit: 1) {
+    docs {
+      id
+      title
+      slug
+      layout {
+        __typename
+        ...Hero
+        ...FeatureGrid
+        ...CallToAction
+      }
+    }
+  }
+}
